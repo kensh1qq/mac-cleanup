@@ -1,0 +1,162 @@
+#!/bin/bash
+# cleanup — скан и чистка мусора на Mac. Насовсем ничего не удаляет: всё уходит в Корзину.
+#   cleanup           показать, что сколько весит
+#   cleanup clean     выбрать номера → перенести в Корзину
+#   cleanup list | trash N… | free   — для приложения «Чистка Mac»
+#   cleanup selftest  проверить, что перенос работает (на фейковом HOME)
+# Потолок: список целей захардкожен ниже. Новый пожиратель места = одна строка add.
+set -u
+set -f  # пути с пробелами, без глобов
+
+L="$HOME/Library"
+LABELS=(); PATHS=(); PROCS=()
+add() { LABELS+=("$1"); PATHS+=("$2"); PROCS+=("$3"); }
+
+# метка | пути через ":" | процесс, при котором пропускаем
+add "Cursor: снапшоты агента"     "$L/Application Support/Cursor/snapshots"                  "Cursor.app"
+add "Telegram: кэш"               "$L/Caches/ru.keepcoder.Telegram:$L/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/stable/temp" "Telegram.app"
+add "Spotify: кэш"                "$L/Caches/com.spotify.client"                             "Spotify.app"
+add "Chrome: кэш"                 "$L/Caches/Google"                                         "Google Chrome.app"
+add "Codex: кэш и рантаймы"       "$L/Caches/com.openai.codex:$HOME/.cache/codex-runtimes"   "Codex.app"
+add "Android: эмуляторы и образы" "$HOME/.android/avd:$L/Android/sdk/system-images:$L/Android/sdk/emulator" "qemu-system"
+add "Gradle: кэш"                 "$HOME/.gradle/caches:$HOME/.gradle/wrapper"               "GradleDaemon"
+add "Xcode: DerivedData"          "$L/Developer/Xcode/DerivedData"                           "Xcode.app"
+add "iOS-симуляторы (сброс)"      "$L/Developer/CoreSimulator/Devices"                       "Simulator.app"
+add "npm: кэш"                    "$HOME/.npm/_cacache"                                      ""
+add "Homebrew: кэш"               "$L/Caches/Homebrew"                                       ""
+add "pip/uv: кэш"                 "$L/Caches/pip:$HOME/.cache/uv"                            ""
+add "Yarn/pnpm: кэш"              "$L/Caches/Yarn:$L/pnpm/store"                             ""
+add "Discord: кэш"                "$L/Application Support/discord/Cache:$L/Application Support/discord/Code Cache" "Discord.app"
+add "Xcode: DeviceSupport"        "$L/Developer/Xcode/iOS DeviceSupport"                     "Xcode.app"
+
+# Сборки в проектах — пересобираются сами. target берём только рядом с Cargo.toml.
+builds=""
+while IFS= read -r d; do
+  [ "${d##*/}" = target ] && [ ! -f "${d%/*}/Cargo.toml" ] && continue
+  builds="$builds:$d"
+done < <(find "$HOME/Projects" -maxdepth 6 -name node_modules -prune -o -type d \
+          \( -name .next -o -name target -o -path '*/android/app/build' \) -print -prune 2>/dev/null)
+add "Сборки в ~/Projects (.next, Rust target, android build)" "${builds#:}" ""
+
+size_kb() {
+  local IFS=: p k s=0
+  for p in $1; do
+    [ -e "$p" ] || continue
+    k=$(du -sk "$p" 2>/dev/null | cut -f1)  # пусто, если macOS не пустила (TCC)
+    s=$((s + ${k:-0}))
+  done
+  echo $s
+}
+human()   { awk -v k="$1" 'BEGIN{ if (k >= 1048576) printf "%.1f ГБ", k/1048576; else printf "%d МБ", k/1024 }'; }
+running() { [ -n "$1" ] && pgrep -f "$1" >/dev/null; }
+free_gb() { df -k "$HOME" | awk 'NR==2{ printf "%.1f ГБ", $4/1048576 }'; }
+
+to_trash() {
+  local IFS=: p t; t=$(date +%s)
+  for p in $1; do
+    [ -e "$p" ] || continue
+    mv "$p" "$HOME/.Trash/$(basename "$(dirname "$p")")-$(basename "$p")-$t-$RANDOM" && echo "    → Корзина: ${p/#$HOME/~}"
+  done
+}
+
+SIZES=()
+scan() {
+  echo "Свободно: $(free_gb)"; echo
+  local i k note
+  for i in "${!LABELS[@]}"; do
+    k=$(size_kb "${PATHS[$i]}"); SIZES[$i]=$k
+    [ "$k" -lt 51200 ] && continue  # меньше 50 МБ не показываем
+    note=""; running "${PROCS[$i]}" && note="  (открыто — закрой, иначе пропущу)"
+    printf "%3d  %9s  %s%s\n" $((i+1)) "$(human "$k")" "${LABELS[$i]}" "$note"
+  done
+  echo; echo "Вручную (сам не трогаю):"
+  for p in "$HOME/Parallels" "$HOME/Downloads" "$HOME/.claude/projects" "$HOME/.codex/sessions"; do
+    [ -e "$p" ] && printf "     %9s  %s\n" "$(human "$(size_kb "$p")")" "${p/#$HOME/~}"
+  done
+}
+
+clean() {
+  scan; echo
+  read -r -p "Номера через пробел (или all, пусто — выход): " ans
+  [ -z "$ans" ] && exit 0
+  local picks=() n i
+  if [ "$ans" = all ]; then
+    for i in "${!LABELS[@]}"; do [ "${SIZES[$i]}" -ge 51200 ] && picks+=("$i"); done
+  else
+    for n in $ans; do
+      case "$n" in ''|*[!0-9]*) echo "Не номер: $n"; exit 1;; esac
+      [ "$n" -ge 1 ] && [ "$n" -le "${#LABELS[@]}" ] || { echo "Нет такого номера: $n"; exit 1; }
+      picks+=($((n-1)))
+    done
+  fi
+  echo; for i in "${picks[@]}"; do echo "  ${LABELS[$i]} — $(human "${SIZES[$i]}")"; done
+  read -r -p "Перенести это в Корзину? [y/N] " ok
+  [ "$ok" = y ] || [ "$ok" = Y ] || exit 0
+
+  do_trash "${picks[@]}"
+}
+
+# Перенести выбранные (индексы с 0) — общий путь для clean и для приложения.
+do_trash() {
+  local before i; before=$(free_gb)
+  for i in "$@"; do
+    echo "• ${LABELS[$i]}"
+    if running "${PROCS[$i]}"; then echo "    пропущено: приложение открыто"; continue; fi
+    if [ "${LABELS[$i]}" = "iOS-симуляторы (сброс)" ]; then
+      xcrun simctl shutdown all 2>/dev/null; xcrun simctl delete unavailable; xcrun simctl erase all && echo "    сброшены"
+    else
+      to_trash "${PATHS[$i]}"
+    fi
+  done
+  echo; echo "Свободно: было $before, стало $(free_gb)."
+  echo "Место вернётся полностью после «Очистить Корзину» (правый клик по Корзине в Доке)."
+}
+
+# Для приложения: номер<TAB>КБ<TAB>размер<TAB>метка<TAB>открыто(0/1), только то, что ≥ 50 МБ.
+list() {
+  local i k
+  for i in "${!LABELS[@]}"; do
+    k=$(size_kb "${PATHS[$i]}")
+    [ "$k" -lt 51200 ] && continue
+    printf "%d\t%s\t%s\t%s\t%d\n" $((i+1)) "$k" "$(human "$k")" "${LABELS[$i]}" "$(running "${PROCS[$i]}" && echo 1 || echo 0)"
+  done
+}
+
+# Для приложения: перенести по номерам без вопросов.
+trash_nums() {
+  local picks=() n
+  for n in "$@"; do
+    case "$n" in ''|*[!0-9]*) echo "Не номер: $n"; exit 1;; esac
+    [ "$n" -ge 1 ] && [ "$n" -le "${#LABELS[@]}" ] || { echo "Нет такого номера: $n"; exit 1; }
+    picks+=($((n-1)))
+  done
+  do_trash "${picks[@]}"
+}
+
+selftest() {
+  local h; h=$(mktemp -d)
+  mkdir -p "$h/.Trash" "$h/.npm/_cacache" "$h/Projects/app/.next" "$h/Projects/app/src/target" "$h/Projects/rs/target"
+  touch "$h/Projects/rs/Cargo.toml"
+  dd if=/dev/zero of="$h/.npm/_cacache/blob" bs=1m count=60 2>/dev/null
+  dd if=/dev/zero of="$h/Projects/app/.next/blob" bs=1m count=60 2>/dev/null
+  # путь приложения: list → trash по всем номерам
+  HOME="$h" "$0" trash $(HOME="$h" "$0" list | cut -f1) >/dev/null
+  local fail=0
+  [ -e "$h/.npm/_cacache" ]        && { echo "FAIL: npm-кэш не перенесён"; fail=1; }
+  [ -e "$h/Projects/app/.next" ]   && { echo "FAIL: .next не перенесён"; fail=1; }
+  [ -e "$h/Projects/rs/target" ]   && { echo "FAIL: Rust target не перенесён"; fail=1; }
+  [ -e "$h/Projects/app/src/target" ] || { echo "FAIL: снесён target без Cargo.toml"; fail=1; }
+  [ "$(ls -A "$h/.Trash" | wc -l)" -eq 3 ] || { echo "FAIL: в Корзине не 3 элемента"; fail=1; }
+  rm -rf "$h"
+  [ $fail -eq 0 ] && echo "selftest OK"; return $fail
+}
+
+case "${1:-}" in
+  "")       scan ;;
+  clean)    clean ;;
+  list)     list ;;
+  trash)    shift; trash_nums "$@" ;;
+  free)     free_gb ;;
+  selftest) selftest ;;
+  *)        sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac
