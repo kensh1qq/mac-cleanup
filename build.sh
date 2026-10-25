@@ -9,8 +9,8 @@ cd "$(dirname "$0")"
 APP="dist/Чистка.app"
 rm -rf dist build && mkdir -p dist build "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macos14 App.swift -o build/arm64
-swiftc -O -swift-version 5 -parse-as-library -target x86_64-apple-macos14 App.swift -o build/x86_64
+swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macos14 App.swift Companion.swift -o build/arm64
+swiftc -O -swift-version 5 -parse-as-library -target x86_64-apple-macos14 App.swift Companion.swift -o build/x86_64
 lipo -create build/arm64 build/x86_64 -output "$APP/Contents/MacOS/Chistka"
 cp cleanup "$APP/Contents/Resources/cleanup"
 
@@ -33,11 +33,12 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key><string>Chistka</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.1</string>
-  <key>CFBundleVersion</key><string>2</string>
+  <key>CFBundleShortVersionString</key><string>1.2</string>
+  <key>CFBundleVersion</key><string>3</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSAppleEventsUsageDescription</key><string>Чтобы очистить Корзину через Finder.</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
 </dict></plist>
 PLIST
 

@@ -128,13 +128,20 @@ struct BigFile: Identifiable {
     var folder: String { (path as NSString).deletingLastPathComponent.replacingOccurrences(of: home, with: "~") }
     var note: String {
         let ext = (path as NSString).pathExtension.lowercased()
+        let n = (path as NSString).lastPathComponent
         if path.contains("/MobileSync/Backup/") { return "Резервная копия iPhone" }
+        if n == ".colima" || n == ".lima" { return "Диск Docker/colima — все образы и контейнеры. Удаление = сброс окружения" }
+        if path.contains("rancher-desktop") { return "Диск Rancher Desktop — все образы и контейнеры" }
+        if path.contains("com.docker.docker") || path.contains(".docker/desktop") { return "Диск Docker Desktop — все образы и контейнеры" }
         switch ext {
         case "pvm", "utm", "vmwarevm": return "Виртуальная машина"
         case "dmg", "iso", "pkg": return "Установщик / образ — после установки не нужен"
         case "zip", "rar", "7z", "gz", "tar": return "Архив"
         case "mov", "mp4", "mkv", "avi": return "Видео"
-        default: return ""
+        default:
+            if path.hasPrefix(home + "/Downloads/") { return "Давно лежит в Downloads" }
+            if path.hasPrefix(home + "/Desktop/") { return "Давно лежит на Рабочем столе" }
+            return ""
         }
     }
 }
@@ -368,10 +375,28 @@ final class Model: ObservableObject {
         let backups = lib + "/Application Support/MobileSync/Backup"
         for n in (try? fm.contentsOfDirectory(atPath: backups)) ?? [] { paths.insert(backups + "/" + n) }
 
+        // Docker/colima/lima/Rancher Desktop — виртуальные диски под образы и контейнеры.
+        // Берём директорию целиком (как .pvm у Parallels): внутренние имена файлов lima
+        // меняются от версии к версии, а сами эти папки и так не трогают руками.
+        for p in [home + "/.colima", home + "/.lima",
+                  lib + "/Application Support/rancher-desktop/lima",
+                  lib + "/Containers/com.docker.docker/Data/vms",
+                  home + "/.docker/desktop/vms"] where fm.fileExists(atPath: p) {
+            paths.insert(p)
+        }
+
+        // Давно лежащие файлы в Downloads и на Рабочем столе — mdfind с порогом 500 МБ их не ловит.
+        for dir in ["Downloads", "Desktop"] {
+            let full = home + "/" + dir
+            guard fm.fileExists(atPath: full) else { continue }
+            let out = Sh.run("/usr/bin/find", [full, "-maxdepth", "3", "-type", "f", "-size", "+20M", "-mtime", "+60", "-not", "-path", "*/.*"]).out
+            for raw in out.split(separator: "\n") { paths.insert(String(raw)) }
+        }
+
         return await withTaskGroup(of: BigFile.self) { g in
             for p in paths { g.addTask { BigFile(path: p, kb: Sh.duKB([p]), lastUsed: Sh.lastUsed(p)) } }
             var out: [BigFile] = []
-            for await f in g where f.kb >= 300 * 1024 { out.append(f) }
+            for await f in g where f.kb >= 20 * 1024 { out.append(f) }   // порог снижен: Downloads/Desktop ловим с 20 МБ
             return Array(out.sorted { $0.kb > $1.kb }.prefix(50))
         }
     }
@@ -713,7 +738,7 @@ struct ContentView: View {
             guard let a = m.apps else { return "Считаю программы и их данные…" }
             return "\(a.count) программ · \(human(a.reduce(0) { $0 + $1.totalKB }))"
         case .files:
-            guard let f = m.files else { return "Ищу файлы больше 500 МБ…" }
+            guard let f = m.files else { return "Ищу большие и подзабытые файлы…" }
             return f.isEmpty ? "Больших файлов не нашлось" : "\(f.count) больших · \(human(f.reduce(0) { $0 + $1.kb }))"
         }
     }
@@ -856,7 +881,7 @@ struct ContentView: View {
     @ViewBuilder var filesTab: some View {
         if let files = m.files {
             if files.isEmpty {
-                empty("doc.badge.checkmark", "Файлов больше 500 МБ нет")
+                empty("doc.badge.checkmark", "Ничего такого не нашлось")
             } else {
                 ScrollView {
                     VStack(spacing: 2) {
@@ -943,10 +968,17 @@ extension String {
 #if !TEST
 @main
 struct ChistkaApp: App {
+    @StateObject private var disk = DiskWatcher()
     var body: some Scene {
-        WindowGroup { ContentView() }
+        WindowGroup(id: "main") { ContentView() }
             .windowStyle(.hiddenTitleBar)
             .windowResizability(.contentSize)
+        MenuBarExtra {
+            MenuBarView(disk: disk)
+        } label: {
+            Label(disk.label, systemImage: "wand.and.sparkles")
+        }
+        .menuBarExtraStyle(.menu)
     }
 }
 #endif

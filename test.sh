@@ -4,5 +4,5 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ./cleanup selftest
 mkdir -p build
-swiftc -swift-version 5 -D TEST App.swift Tests.swift -o build/tests
+swiftc -swift-version 5 -D TEST App.swift Companion.swift Tests.swift -o build/tests
 ./build/tests
