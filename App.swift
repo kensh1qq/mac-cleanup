@@ -24,6 +24,20 @@ func ago(_ d: Date?) -> String {
     }
 }
 
+/// Короткая форма для строк, где дата склеивается с другим текстом через «·» —
+/// длинное предложение там обрезается посередине и превращается в кашу.
+func agoShort(_ d: Date?) -> String {
+    guard let d else { return "не открывалось" }
+    let days = Int(-d.timeIntervalSinceNow / 86400)
+    switch days {
+    case ..<1: return "сегодня"
+    case 1: return "вчера"
+    case ..<30: return "\(days) дн. назад"
+    case ..<365: return "\(days / 30) мес. назад"
+    default: return "больше года назад"
+    }
+}
+
 // MARK: - Шелл
 
 enum Sh {
@@ -848,7 +862,7 @@ struct ContentView: View {
                     VStack(spacing: 2) {
                         let maxKB = files.map(\.kb).max() ?? 1
                         ForEach(files) { f in
-                            let sub = [f.note.isEmpty ? nil : f.note, f.folder, ago(f.lastUsed)].compactMap { $0 }.joined(separator: " · ")
+                            let sub = [f.note.isEmpty ? nil : f.note, f.folder, agoShort(f.lastUsed)].compactMap { $0 }.joined(separator: " · ")
                             RowShell(title: f.name, subtitle: sub) {
                                 Icon(path: f.path)
                             } trail: { hover in
