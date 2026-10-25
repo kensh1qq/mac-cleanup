@@ -191,6 +191,7 @@ final class Model: ObservableObject {
             .resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey])
         totalBytes = Int64(v?.volumeTotalCapacity ?? 0)
         freeBytes = Int64(v?.volumeAvailableCapacity ?? 0)
+        NotificationCenter.default.post(name: .chistkaDiskChanged, object: nil)   // меню-бар подхватит без своего опроса
     }
 
     func show(_ text: String) {

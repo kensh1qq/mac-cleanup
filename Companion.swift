@@ -17,19 +17,32 @@ func compareVersions(_ a: String, _ b: String) -> Int {
     return 0
 }
 
+extension Notification.Name {
+    /// Что-то в приложении поменяло свободное место (почистили, очистили Корзину) — обновить меню-бар.
+    static let chistkaDiskChanged = Notification.Name("cc.kensh1qq.cleanup.diskChanged")
+}
+
 // MARK: - Свободное место для меню-бара
 
+/// Никакого таймера: обновляется только по событиям — открыли меню, вернулись из сна,
+/// переключились на приложение, что-то почистили. В простое процесс не делает вообще ничего.
 @MainActor
 final class DiskWatcher: ObservableObject {
     @Published var freeGB: Double = 0
-    private var timer: Timer?
+    private var tokens: [(NotificationCenter, NSObjectProtocol)] = []
 
     init() {
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+        for name: Notification.Name in [NSApplication.didBecomeActiveNotification, .chistkaDiskChanged] {
+            let t = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.refresh() } }
+            tokens.append((.default, t))
         }
+        let ws = NSWorkspace.shared.notificationCenter
+        let t = ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.refresh() } }
+        tokens.append((ws, t))
     }
+
+    deinit { tokens.forEach { $0.0.removeObserver($0.1) } }
 
     func refresh() {
         let v = try? URL(fileURLWithPath: home).resourceValues(forKeys: [.volumeAvailableCapacityKey])
@@ -146,6 +159,7 @@ struct MenuBarView: View {
 
     var body: some View {
         Text("Свободно: \(String(format: "%.1f", disk.freeGB)) ГБ")
+            .onAppear { disk.refresh() }   // меню открыли — число должно быть свежим, без фонового опроса
         Button("Открыть «Чистку»") {
             NSApp.activate(ignoringOtherApps: true)
             openWindow(id: "main")
